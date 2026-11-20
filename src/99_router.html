@@ -1,0 +1,153 @@
+<script>
+/* ================= hub + router ================= */
+(() => {
+  const $ = id => document.getElementById(id);
+  const grid = $('grid'), hub = $('hub'), play = $('play'), stage = $('stage'), qEl = $('q'), filters = $('filters');
+  let current = null, currentId = null;
+  const CAT_DEFAULT = { blockworld:'3D', skyobby:'3D', deflect:'3D', pulsedash:'Arcade', orbithop:'Arcade', snake:'Arcade', bricks:'Arcade', merge:'Puzzle' };
+  const ORIGINAL = 32;
+  GAMES.forEach((g, i) => { g.cat = g.cat || CAT_DEFAULT[g.id] || 'Arcade'; g.order = i; g.isNew = i >= ORIGINAL; });
+  const CAT_ORDER = ['3D','Arcade','Action','Puzzle','Board','Card','Word','Brain','Skill','Sports','Strategy','Casual'];
+  const cats = ['All','★ Favorites', ...CAT_ORDER.filter(c => GAMES.some(g => g.cat === c || (c === '3D' && g.tag === '3D'))), ...[...new Set(GAMES.map(g => g.cat))].filter(c => !CAT_ORDER.includes(c))];
+  let cat = 'All', q = '', sort = 'featured';
+
+  // ---------- settings ----------
+  const saveSet = () => { try { localStorage.setItem('arcadehub_settings', JSON.stringify(SET)); } catch(e){} };
+  function applySet(){
+    const h = document.documentElement;
+    h.dataset.theme = SET.theme; h.dataset.accent = SET.accent; h.dataset.density = SET.density;
+    h.dataset.motion = SET.reduceMotion ? 'reduce' : ''; h.dataset.text = SET.largeText ? 'large' : '';
+    isTouch = SET.touchUI === 'on' || (SET.touchUI !== 'off' && TOUCH_HW);
+    document.querySelectorAll('#settings [data-k]').forEach(el => {
+      const k = el.dataset.k, v = SET[k];
+      if (el.classList.contains('sw')) el.classList.toggle('on', !!v);
+      else if (el.type === 'range') el.value = v;
+      else el.querySelectorAll('[data-v]').forEach(b => b.classList.toggle('on', b.dataset.v === String(v)));
+    });
+    $('gMute').textContent = SET.sound ? '🔊' : '🔇';
+    $('recentWrap').style.display = SET.showRecent && recent().length ? '' : 'none';
+  }
+  document.querySelectorAll('#settings [data-k]').forEach(el => {
+    const k = el.dataset.k;
+    if (el.classList.contains('sw')) el.onclick = () => { SET[k] = !SET[k]; saveSet(); applySet(); };
+    else if (el.type === 'range') el.oninput = () => { SET[k] = +el.value; saveSet(); applySet(); };
+    else el.querySelectorAll('[data-v]').forEach(b => b.onclick = () => { SET[k] = b.dataset.v; saveSet(); applySet(); renderHub(); });
+  });
+  document.querySelectorAll('#setTabs button').forEach(b => b.onclick = () => {
+    document.querySelectorAll('#setTabs button').forEach(x => x.classList.toggle('on', x === b));
+    document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.dataset.p === b.dataset.t));
+  });
+  const openSet = () => { if (document.pointerLockElement) document.exitPointerLock(); $('settings').classList.add('on'); };
+  const closeSet = () => $('settings').classList.remove('on');
+  $('openSet').onclick = openSet; $('gSet').onclick = openSet; $('closeSet').onclick = closeSet;
+  $('settings').addEventListener('click', e => { if (e.target.id === 'settings') closeSet(); });
+  $('testSnd').onclick = () => { audioInit(); [523,659,784].forEach((f,i) => beep(f,.12,'triangle',.12,0,i*.09)); };
+  function toast(t){ const el = $('toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('on'), 1800); }
+  function wipe(prefixes){ try { Object.keys(localStorage).filter(k => prefixes.some(p => k.startsWith('arcadehub_' + p))).forEach(k => localStorage.removeItem(k)); } catch(e){} }
+  const confirmBtn = (btn, msg, fn) => { if (btn.dataset.arm){ fn(); btn.textContent = btn.dataset.label; delete btn.dataset.arm; toast(msg); renderHub(); } else { btn.dataset.label = btn.textContent; btn.dataset.arm = 1; btn.textContent = 'Tap again to confirm'; setTimeout(() => { if (btn.dataset.arm){ btn.textContent = btn.dataset.label; delete btn.dataset.arm; } }, 3000); } };
+  $('clrBest').onclick = e => confirmBtn(e.target, 'Best scores reset', () => wipe(['best_','pd_','wl_']));
+  $('clrFav').onclick = e => confirmBtn(e.target, 'Favorites & history cleared', () => wipe(['favs','recent','plays']));
+  $('clrSet').onclick = e => confirmBtn(e.target, 'Settings restored', () => { SET = Object.assign({}, SET_DEFAULTS); saveSet(); applySet(); });
+
+  // ---------- library state ----------
+  const favs = () => Store.get('favs', []), recent = () => Store.get('recent', []), plays = () => Store.get('plays', {});
+  function toggleFav(id){ const f = favs(); const i = f.indexOf(id); if (i >= 0) f.splice(i, 1); else f.unshift(id); Store.set('favs', f); toast(i >= 0 ? 'Removed from favorites' : 'Added to favorites ★'); renderHub(); }
+  function markPlayed(id){ Store.set('recent', [id, ...recent().filter(x => x !== id)].slice(0, 12)); const p = plays(); p[id] = (p[id] || 0) + 1; Store.set('plays', p); }
+  const bestText = g => { const b = Store.get('best_' + g.id, null); return b == null ? '' : (g.bestLabel || 'Best') + ' ' + (g.fmt ? g.fmt(b) : b); };
+
+  function renderFilters(){
+    filters.innerHTML = '';
+    const fv = favs();
+    cats.forEach(c => {
+      const n = c === 'All' ? GAMES.length : c === '★ Favorites' ? fv.length : GAMES.filter(g => g.cat === c || (c === '3D' && g.tag === '3D')).length;
+      const b = document.createElement('button'); b.className = 'chip' + (c === cat ? ' on' : '');
+      b.innerHTML = `${c}<em>${n}</em>`; b.onclick = () => { cat = c; renderHub(); };
+      filters.appendChild(b);
+    });
+    const s = document.createElement('select'); s.className = 'chip'; s.title = 'Sort';
+    [['featured','Featured'],['az','A → Z'],['played','Most played'],['recent','Recently played'],['new','Newest']].forEach(([v,t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; if (v === sort) o.selected = true; s.appendChild(o); });
+    s.onchange = () => { sort = s.value; renderHub(); };
+    s.style.marginLeft = 'auto';
+    filters.appendChild(s);
+  }
+  function card(g){
+    const b = document.createElement('div'); b.className = 'card'; b.tabIndex = 0; b.setAttribute('role','button');
+    const isFav = favs().includes(g.id), bt = bestText(g), pc = plays()[g.id] || 0;
+    b.innerHTML = `<div class="art" style="background:${g.bg}"><span>${g.emoji}</span></div>${g.isNew ? '<div class="badge">NEW</div>' : ''}<button class="fav ${isFav?'on':''}" title="Favorite">${isFav ? '★' : '☆'}</button>
+      <h3>${g.title}</h3><div class="d">${g.desc}</div>
+      <div class="meta"><span class="tag ${g.tag==='3D'?'d3':''}">${g.tag==='3D' ? '3D' : g.cat}</span><span>${bt || (pc ? pc + ' play' + (pc>1?'s':'') : '')}</span></div>`;
+    b.querySelector('.fav').onclick = e => { e.stopPropagation(); toggleFav(g.id); };
+    b.onclick = () => launch(g.id);
+    b.onkeydown = e => { if (e.key === 'Enter') launch(g.id); };
+    return b;
+  }
+  function renderHub(){
+    const fv = favs(), rc = recent(), pl = plays();
+    $('sub').textContent = `${GAMES.length} games in one place: 3D adventures, arcade classics, puzzles, board and card games. Your scores and favorites are saved in this browser.`;
+    $('kGames').textContent = GAMES.length; $('kPlayed').textContent = Object.values(pl).reduce((a,b) => a+b, 0); $('kFav').textContent = fv.length;
+    $('kBest').textContent = GAMES.filter(g => Store.get('best_' + g.id, null) != null).length;
+    const rail = $('recent'); rail.innerHTML = '';
+    rc.map(id => GAMES.find(g => g.id === id)).filter(Boolean).forEach(g => {
+      const m = document.createElement('button'); m.className = 'mini';
+      m.innerHTML = `<div class="ic" style="background:${g.bg}">${g.emoji}</div><div style="min-width:0"><b>${g.title}</b><small>${bestText(g) || 'Played ' + (pl[g.id]||1) + '×'}</small></div>`;
+      m.onclick = () => launch(g.id); rail.appendChild(m);
+    });
+    $('recentWrap').style.display = SET.showRecent && rc.length && !q ? '' : 'none';
+    renderFilters();
+    let list = GAMES.filter(g => cat === 'All' || (cat === '★ Favorites' ? fv.includes(g.id) : g.cat === cat || (cat === '3D' && g.tag === '3D')));
+    if (q) list = list.filter(g => (g.title + ' ' + g.desc + ' ' + g.cat + ' ' + (g.tag||'')).toLowerCase().includes(q));
+    if (sort === 'az') list.sort((a,b) => a.title.localeCompare(b.title));
+    else if (sort === 'played') list.sort((a,b) => (pl[b.id]||0) - (pl[a.id]||0) || a.order - b.order);
+    else if (sort === 'recent') list.sort((a,b) => { const ia = rc.indexOf(a.id), ib = rc.indexOf(b.id); return (ia<0?99:ia) - (ib<0?99:ib) || a.order - b.order; });
+    else if (sort === 'new') list.sort((a,b) => b.order - a.order);
+    $('listTitle').textContent = q ? `Results for “${q}”` : cat === 'All' ? 'All games' : cat;
+    $('count').textContent = list.length + ' game' + (list.length === 1 ? '' : 's');
+    grid.innerHTML = ''; const frag = document.createDocumentFragment(); list.forEach(g => frag.appendChild(card(g))); grid.appendChild(frag);
+    $('empty').style.display = list.length ? 'none' : '';
+  }
+  qEl.addEventListener('input', () => { q = qEl.value.trim().toLowerCase(); renderHub(); });
+  const randomGame = () => { const pool = cat === 'All' || !GAMES.some(g => g.cat === cat) ? GAMES : GAMES.filter(g => g.cat === cat); launch(pool[randi(0, pool.length-1)].id); };
+  $('rnd').onclick = randomGame; $('heroPlay').onclick = randomGame;
+  $('heroFav').onclick = () => { cat = '★ Favorites'; renderHub(); filters.scrollIntoView({block:'start'}); };
+
+  // ---------- play view ----------
+  function launch(id){ audioInit(); location.hash = id; }
+  function mount(g){
+    if (current){ current.destroy(); current = null; }
+    current = makeCtx(stage, g); currentId = g.id;
+    $('gTitle').textContent = g.emoji + '  ' + g.title;
+    try { g.start(current); } catch(e){ console.error(e); current.div('ov','<div class="box"><h2>Something broke</h2><p>' + e.message + '</p></div>'); }
+  }
+  function route(){
+    const id = location.hash.replace('#','');
+    const g = GAMES.find(x => x.id === id);
+    if (current){ current.destroy(); current = null; currentId = null; }
+    if (g){
+      hub.style.display = 'none'; play.classList.add('on');
+      document.title = g.title + ' · Arcade Hub';
+      markPlayed(g.id); mount(g);
+    } else {
+      play.classList.remove('on'); hub.style.display = '';
+      document.title = 'Arcade Hub';
+      if (document.fullscreenElement) document.exitFullscreen().catch(()=>{});
+      renderHub();
+    }
+  }
+  $('back').onclick = () => { location.hash = 'hub'; };
+  $('gRestart').onclick = () => { const g = GAMES.find(x => x.id === currentId); if (g){ audioInit(); mount(g); } };
+  $('gMute').onclick = () => { SET.sound = !SET.sound; saveSet(); applySet(); toast(SET.sound ? 'Sound on' : 'Sound off'); };
+  $('gFull').onclick = () => { try { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => toast('Fullscreen isn\'t available here')); } catch(e){ toast('Fullscreen isn\'t available here'); } };
+  window.addEventListener('keydown', e => {
+    if (e.code === 'Escape'){
+      if ($('settings').classList.contains('on')) return closeSet();
+      if (current && !document.pointerLockElement) location.hash = 'hub';
+    }
+    if (e.key === '/' && !current && document.activeElement !== qEl){ e.preventDefault(); qEl.focus(); }
+  });
+  window.addEventListener('hashchange', route);
+  applySet();
+  route();
+})();
+</script>
+</body>
+</html>
