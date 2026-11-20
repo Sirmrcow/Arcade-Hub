@@ -1,6 +1,6 @@
 # Arcade Hub
 
-33 browser games in one page — 3D, arcade, puzzle, board and skill games — with favorites, recently played, search, categories and a settings panel (themes, accent colors, volume, look speed, accessibility).
+34 browser games in one page — 3D, arcade, puzzle, board and skill games — with favorites, recently played, search, categories and a settings panel (themes, accent colors, volume, look speed, accessibility).
 
 Everything runs in the browser. There is no server and nothing to install. Best scores, favorites and settings are saved in each player's own browser (localStorage).
 
